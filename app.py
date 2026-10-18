@@ -19,22 +19,46 @@ from services.coaching.tts import TextToSpeech
 from services.coaching.voice_pipeline import VoicePipeline, play_audio
 
 
-
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 
+def get_secret(name, default=""):
+    """Read a setting from env vars first, then Streamlit secrets."""
+    value = os.getenv(name, "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets[name]).strip()
+    except Exception:
+        return default
+
+
+def get_rtc_configuration():
+    """STUN always; TURN too when credentials are set (needed on Render)."""
+    ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
+
+    turn_url = get_secret("TURN_URL")
+    turn_user = get_secret("TURN_USERNAME")
+    turn_pass = get_secret("TURN_PASSWORD")
+
+    if turn_url and turn_user and turn_pass:
+        ice_servers.append(
+            {"urls": [turn_url], "username": turn_user, "credential": turn_pass}
+        )
+
+    return {"iceServers": ice_servers}
+
+
+def turn_configured():
+    return bool(
+        get_secret("TURN_URL") and get_secret("TURN_USERNAME") and get_secret("TURN_PASSWORD")
+    )
+
 
 def initialize_voice_pipeline():
     try:
-        api_key = os.getenv("GROQ_API_KEY", "").strip()
-
-        if not api_key:
-            try:
-                api_key = st.secrets["GROQ_API_KEY"]
-            except Exception:
-                api_key = ""
+        api_key = get_secret("GROQ_API_KEY")
 
         if not api_key:
             st.warning("GROQ API key missing")
@@ -65,8 +89,6 @@ def speak_event(event, exercise):
             st.session_state.audio_to_play = result["audio"]
     except Exception as e:
         print(f"{event} voice error:", e)
-
-
 
 
 def render_exercise_metrics(exercise):
@@ -110,7 +132,6 @@ def start_workout(exercise, sets, reps):
     ss.target_sets = int(sets)
     ss.reps_per_set = int(reps)
 
-    
     ss.reps = 0
     ss.sets_completed = 0
     ss.current_set_reps = 0
@@ -131,7 +152,6 @@ def start_workout(exercise, sets, reps):
 def end_workout(exercise):
     speak_event("workout_completed", exercise)
     st.session_state.workout_started = False
-
 
 
 def main():
@@ -171,7 +191,6 @@ def main():
     workout_started = st.session_state.get("workout_started", False)
     exercise = st.session_state.get("exercise_type")
 
-    
     with st.sidebar:
         st.title("🏋️ Apna AI Coach")
 
@@ -227,12 +246,9 @@ def main():
 
             render_exercise_metrics(exercise)
 
-
-
     st.title("AI Real-time GYM Coach")
     st.markdown("#### Real-time pose detection with AI voice coaching")
 
-    
     new_audio = st.session_state.get("audio_to_play")
     if new_audio:
         st.session_state.current_audio = new_audio
@@ -245,7 +261,6 @@ def main():
     if text:
         st.success(f"🤖 Coach: {text}")
 
-    
     context = None
 
     if not workout_started:
@@ -260,16 +275,21 @@ def main():
             unsafe_allow_html=True,
         )
     else:
+        if not turn_configured():
+            st.warning(
+                "No TURN server configured (TURN_URL / TURN_USERNAME / TURN_PASSWORD). "
+                "The camera may not connect when deployed."
+            )
+
+        # NOTE: desired_playing_state removed - user clicks START so the
+        # browser can show the camera permission prompt.
         context = webrtc_streamer(
             key="gym-camera",
             mode=WebRtcMode.SENDRECV,
             video_processor_factory=VideoProcessorClass,
-            rtc_configuration={
-                "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-            },
+            rtc_configuration=get_rtc_configuration(),
             media_stream_constraints={"video": True, "audio": False},
             async_processing=True,
-            desired_playing_state=True, 
         )
 
         proc = getattr(context, "video_processor", None)
@@ -278,8 +298,7 @@ def main():
             st.write("Video processor created:", proc is not None)
             st.write("Latest metrics:", proc.get_latest_metrics() if proc else None)
             st.write("Voice pipeline ready:", st.session_state.get("voice_pipeline") is not None)
-
-   
+            st.write("TURN configured:", turn_configured())
 
     st.divider()
     st.subheader("Workout History")
@@ -311,7 +330,6 @@ def main():
         except Exception as e:
             print("History error:", e)
 
-    
     if workout_started and context:
         if not st.session_state.get("styles_injected"):
             inject_webrtc_styles()
