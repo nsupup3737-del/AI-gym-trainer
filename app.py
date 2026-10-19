@@ -19,8 +19,11 @@ from services.coaching.tts import TextToSpeech
 from services.coaching.voice_pipeline import VoicePipeline, play_audio
 
 
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
+
 
 
 def get_secret(name, default=""):
@@ -34,26 +37,30 @@ def get_secret(name, default=""):
         return default
 
 
+def _turn_settings():
+    # TURN_URLS may hold several comma-separated URLs; TURN_URL (single) also works.
+    raw = get_secret("TURN_URLS") or get_secret("TURN_URL")
+    urls = [u.strip() for u in raw.split(",") if u.strip()]
+    return urls, get_secret("TURN_USERNAME"), get_secret("TURN_PASSWORD")
+
+
+def turn_configured():
+    urls, user, pw = _turn_settings()
+    return bool(urls and user and pw)
+
+
 def get_rtc_configuration():
-    """STUN always; TURN too when credentials are set (needed on Render)."""
+    """STUN always; TURN as well when credentials are set (needed on Render)."""
     ice_servers = [{"urls": ["stun:stun.l.google.com:19302"]}]
 
-    turn_url = get_secret("TURN_URL")
-    turn_user = get_secret("TURN_USERNAME")
-    turn_pass = get_secret("TURN_PASSWORD")
-
-    if turn_url and turn_user and turn_pass:
-        ice_servers.append(
-            {"urls": [turn_url], "username": turn_user, "credential": turn_pass}
-        )
+    urls, user, pw = _turn_settings()
+    if urls and user and pw:
+        ice_servers.append({"urls": urls, "username": user, "credential": pw})
 
     return {"iceServers": ice_servers}
 
 
-def turn_configured():
-    return bool(
-        get_secret("TURN_URL") and get_secret("TURN_USERNAME") and get_secret("TURN_PASSWORD")
-    )
+MODEL_PATH = os.path.join(BASE_DIR, "ml_models", "pose_landmarker_full.task")
 
 
 def initialize_voice_pipeline():
@@ -89,6 +96,8 @@ def speak_event(event, exercise):
             st.session_state.audio_to_play = result["audio"]
     except Exception as e:
         print(f"{event} voice error:", e)
+
+
 
 
 def render_exercise_metrics(exercise):
@@ -132,6 +141,7 @@ def start_workout(exercise, sets, reps):
     ss.target_sets = int(sets)
     ss.reps_per_set = int(reps)
 
+    
     ss.reps = 0
     ss.sets_completed = 0
     ss.current_set_reps = 0
@@ -154,6 +164,7 @@ def end_workout(exercise):
     st.session_state.workout_started = False
 
 
+
 def main():
     st.set_page_config(
         page_title="AI Real-time GYM Coach",
@@ -161,6 +172,13 @@ def main():
         layout="centered",
         initial_sidebar_state="expanded",
     )
+
+    if not os.path.exists(MODEL_PATH):
+        st.error(
+            "Pose model file missing: ml_models/pose_landmarker_full.task. "
+            "Make sure it is committed to your repo (not git-ignored)."
+        )
+        st.stop()
 
     # CSS / font
     css_file = os.path.join(BASE_DIR, "static", "style.css")
@@ -191,6 +209,7 @@ def main():
     workout_started = st.session_state.get("workout_started", False)
     exercise = st.session_state.get("exercise_type")
 
+    
     with st.sidebar:
         st.title("🏋️ Apna AI Coach")
 
@@ -246,9 +265,12 @@ def main():
 
             render_exercise_metrics(exercise)
 
+
+
     st.title("AI Real-time GYM Coach")
     st.markdown("#### Real-time pose detection with AI voice coaching")
 
+    
     new_audio = st.session_state.get("audio_to_play")
     if new_audio:
         st.session_state.current_audio = new_audio
@@ -261,6 +283,7 @@ def main():
     if text:
         st.success(f"🤖 Coach: {text}")
 
+    
     context = None
 
     if not workout_started:
@@ -277,12 +300,12 @@ def main():
     else:
         if not turn_configured():
             st.warning(
-                "No TURN server configured (TURN_URL / TURN_USERNAME / TURN_PASSWORD). "
-                "The camera may not connect when deployed."
+                "No TURN server configured (TURN_URLS / TURN_USERNAME / TURN_PASSWORD). "
+                "The camera will most likely not connect when deployed."
             )
 
-        # NOTE: desired_playing_state removed - user clicks START so the
-        # browser can show the camera permission prompt.
+        # desired_playing_state removed: the user clicks START so the browser
+        # can show the camera permission prompt.
         context = webrtc_streamer(
             key="gym-camera",
             mode=WebRtcMode.SENDRECV,
@@ -299,6 +322,8 @@ def main():
             st.write("Latest metrics:", proc.get_latest_metrics() if proc else None)
             st.write("Voice pipeline ready:", st.session_state.get("voice_pipeline") is not None)
             st.write("TURN configured:", turn_configured())
+
+   
 
     st.divider()
     st.subheader("Workout History")
@@ -330,6 +355,7 @@ def main():
         except Exception as e:
             print("History error:", e)
 
+    
     if workout_started and context:
         if not st.session_state.get("styles_injected"):
             inject_webrtc_styles()
